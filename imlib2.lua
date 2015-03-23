@@ -400,6 +400,20 @@ ffi.cdef([[
     void imlib_image_clear_color(int r, int g, int b, int a);
 ]])
 
+-- data dumper
+
+ffi.cdef([[
+    struct _image_data{
+       int               w, h, has_alpha;
+       DATA32           *data;
+    };
+    typedef struct _image_data ImageData;
+
+    char *save(ImageData *im, int *length);
+    void free_data(char *data);
+]])
+local dumper = ffi.load('./dump.so')
+
 local function get_flags()
   local proc = io.popen("imlib2-config --cflags --libs", "r")
   local flags = proc:read("*a")
@@ -451,14 +465,17 @@ local color_mt = {
 Color_ = ffi.metatype('Imlib_Color', color_mt)
 Color = setmetatable({}, {
     __call = function(self,r,g,b,a)
-        local a = a or 255
-        assert( (a and r and g and b) and (a>-1 and a<256) 
-            and (r>-1 and r<256) 
-            and (g>-1 and g<256) 
-            and (b>-1 and b<256), "values must be >= 0 and <= 255")
-        --return Color_(a, r, g, b)
-
-        local color = ffi.new('Imlib_Color',{a,r,g,b})
+        local color
+        if("cdata"==type(r))then
+            color = r
+        else
+            local a = a or 255
+            assert( (a and r and g and b) and (a>-1 and a<256) 
+                and (r>-1 and r<256) 
+                and (g>-1 and g<256) 
+                and (b>-1 and b<256), "values must be >= 0 and <= 255")
+            color = Color_(a,r,g,b)
+        end
         return setmetatable({}, {
             __tostring = function()
                 return string.format("%d,%d,%d,%d",color.red, color.green, color.blue, color.alpha)
@@ -473,50 +490,142 @@ Color = setmetatable({}, {
         })
     end,
     __index = {
-        CLEAR       = ffi.new('Imlib_Color',{0,0,0,0}),
-        TRANSPARENT = ffi.new('Imlib_Color',{0, 0, 0, 0}),
-        TRANSLUCENT = ffi.new('Imlib_Color',{0, 0, 0, 0}),
-        SHADOW      = ffi.new('Imlib_Color',{64, 0, 0, 0}),
-        BLACK       = ffi.new('Imlib_Color',{255, 0, 0, 0}),
-        DARKGRAY    = ffi.new('Imlib_Color',{255, 64, 64, 64}),
-        DARKGREY    = ffi.new('Imlib_Color',{255, 64, 64, 64}),
-        GRAY        = ffi.new('Imlib_Color',{255, 128, 128, 128}),
-        GREY        = ffi.new('Imlib_Color',{255, 128, 128, 128}),
-        LIGHTGRAY   = ffi.new('Imlib_Color',{255, 192, 192, 192}),
-        LIGHTGREY   = ffi.new('Imlib_Color',{255, 192, 192, 192}),
-        WHITE       = ffi.new('Imlib_Color',{255, 255, 255, 255}),
-        RED         = ffi.new('Imlib_Color',{255, 255, 0, 0}),
-        GREEN       = ffi.new('Imlib_Color',{255, 0, 255, 0}),
-        BLUE        = ffi.new('Imlib_Color',{255, 0, 0, 255}),
-        YELLOW      = ffi.new('Imlib_Color',{255, 255, 255, 0}),
-        ORANGE      = ffi.new('Imlib_Color',{255, 255, 128, 0}),
-        BROWN       = ffi.new('Imlib_Color',{255, 128, 64, 0}),
-        MAGENTA     = ffi.new('Imlib_Color',{255, 255, 0, 128}),
-        VIOLET      = ffi.new('Imlib_Color',{255, 255, 0, 255}),
-        PURPLE      = ffi.new('Imlib_Color',{255, 128, 0, 255}),
-        INDIGO      = ffi.new('Imlib_Color',{255, 128, 0, 255}),
-        CYAN        = ffi.new('Imlib_Color',{255, 0, 255, 255}),
-        AQUA        = ffi.new('Imlib_Color',{255, 0, 128, 255}),
-        AZURE       = ffi.new('Imlib_Color',{255, 0, 128, 255}),
-        TEAL        = ffi.new('Imlib_Color',{255, 0, 255, 128}),
-        DARKRED     = ffi.new('Imlib_Color',{255, 128, 0, 0}),
-        DARKGREEN   = ffi.new('Imlib_Color',{255, 0, 128, 0}),
-        DARKBLUE    = ffi.new('Imlib_Color',{255, 0, 0, 128}),
-        DARKYELLOW  = ffi.new('Imlib_Color',{255, 128, 128, 0}),
-        DARKORANGE  = ffi.new('Imlib_Color',{255, 128, 64, 0}),
-        DARKBROWN   = ffi.new('Imlib_Color',{255, 64, 32, 0}),
-        DARKMAGENTA = ffi.new('Imlib_Color',{255, 128, 0, 64}),
-        DARKVIOLET  = ffi.new('Imlib_Color',{255, 128, 0, 128}),
-        DARKPURPLE  = ffi.new('Imlib_Color',{255, 64, 0, 128}),
-        DARKINDIGO  = ffi.new('Imlib_Color',{255, 64, 0, 128}),
-        DARKCYAN    = ffi.new('Imlib_Color',{255, 0, 128, 128}),
-        DARKAQUA    = ffi.new('Imlib_Color',{255, 0, 64, 128}),
-        DARKAZURE   = ffi.new('Imlib_Color',{255, 0, 64, 128}),
-        DARKTEAL    = ffi.new('Imlib_Color',{255, 0, 128, 64}),
+        CLEAR       = Color_(0,0,0,0),
+        TRANSPARENT = Color_(0, 0, 0, 0),
+        TRANSLUCENT = Color_(0, 0, 0, 0),
+        SHADOW      = Color_(64, 0, 0, 0),
+        BLACK       = Color_(255, 0, 0, 0),
+        DARKGRAY    = Color_(255, 64, 64, 64),
+        DARKGREY    = Color_(255, 64, 64, 64),
+        GRAY        = Color_(255, 128, 128, 128),
+        GREY        = Color_(255, 128, 128, 128),
+        LIGHTGRAY   = Color_(255, 192, 192, 192),
+        LIGHTGREY   = Color_(255, 192, 192, 192),
+        WHITE       = Color_(255, 255, 255, 255),
+        RED         = Color_(255, 255, 0, 0),
+        GREEN       = Color_(255, 0, 255, 0),
+        BLUE        = Color_(255, 0, 0, 255),
+        YELLOW      = Color_(255, 255, 255, 0),
+        ORANGE      = Color_(255, 255, 128, 0),
+        BROWN       = Color_(255, 128, 64, 0),
+        MAGENTA     = Color_(255, 255, 0, 128),
+        VIOLET      = Color_(255, 255, 0, 255),
+        PURPLE      = Color_(255, 128, 0, 255),
+        INDIGO      = Color_(255, 128, 0, 255),
+        CYAN        = Color_(255, 0, 255, 255),
+        AQUA        = Color_(255, 0, 128, 255),
+        AZURE       = Color_(255, 0, 128, 255),
+        TEAL        = Color_(255, 0, 255, 128),
+        DARKRED     = Color_(255, 128, 0, 0),
+        DARKGREEN   = Color_(255, 0, 128, 0),
+        DARKBLUE    = Color_(255, 0, 0, 128),
+        DARKYELLOW  = Color_(255, 128, 128, 0),
+        DARKORANGE  = Color_(255, 128, 64, 0),
+        DARKBROWN   = Color_(255, 64, 32, 0),
+        DARKMAGENTA = Color_(255, 128, 0, 64),
+        DARKVIOLET  = Color_(255, 128, 0, 128),
+        DARKPURPLE  = Color_(255, 64, 0, 128),
+        DARKINDIGO  = Color_(255, 64, 0, 128),
+        DARKCYAN    = Color_(255, 0, 128, 128),
+        DARKAQUA    = Color_(255, 0, 64, 128),
+        DARKAZURE   = Color_(255, 0, 64, 128),
+        DARKTEAL    = Color_(255, 0, 128, 64),
     },
     __tostring = function()
         return string.format("%d,%d,%d,%d",color.red, color.green, color.blue, color.alpha)
     end,
+})
+
+local ColorModifier
+ColorModifier = setmetatable({}, {
+    __call = function()
+        local imlib2, modifier = imlib2
+        local sc = function()
+            imlib2.imlib_context_set_color_modifier(modifier)
+        end
+        local modifier_gc = function()
+            if not modifier or modifier==ffi.NULL then return end
+            sc()
+            imlib2.imlib_free_color_modifier()
+        end
+        modifier = ffi.gc(imlib2.imlib_create_color_modifier(), modifier_gc)
+        return {
+            setGamma = function(self,v)
+                assert(v,"Missing gamma value")
+                sc()
+                imlib2.imlib_modify_color_modifier_gamma(v)
+            end,
+            setBrightness = function(self,v)
+                assert(v, "Missing brightness value")
+                sc()
+                imlib2.imlib_modify_color_modifier_brightness(v)
+            end,
+            setContrast = function(self,v)
+                assert(v, "Missing contrast value")
+                sc()
+                imlib2.imlib_modify_color_modifier_contrast(v)
+            end,
+            setModifierTables = function(self,red,green,blue,alpha)
+                local red, green, blue, alpha =
+                      red or {}, green or {}, blue or {}, alpha or {}
+                local red_table = ffi.new('DATA8 [256]')
+                local green_table = ffi.new('DATA8 [256]')
+                local blue_table = ffi.new('DATA8 [256]')
+                local alpha_table = ffi.new('DATA8 [256]')
+                for i=1,256 do
+                    local c = red[i]
+                    if c then red_table[i-1] = c end
+                end
+                for i=1,256 do
+                    local c = green[i]
+                    if c then green_table[i-1] = c end
+                end
+                for i=1,256 do
+                    local c = blue[i]
+                    if c then blue_table[i-1] = c end
+                end
+                for i=1,256 do
+                    local c = alpha[i]
+                    if c then alpha_table[i-1] = c end
+                end
+                sc()
+                imlib2.imlib_set_color_modifier_tables(red_table, green_table, blue_table, alpha_table)
+            end,
+            -- FIXME: won't return set values
+            getModifierTables = function()
+                local red_table = ffi.new('DATA8 [256]')
+                local green_table = ffi.new('DATA8 [256]')
+                local blue_table = ffi.new('DATA8 [256]')
+                local alpha_table = ffi.new('DATA8 [256]')
+                sc()
+                imlib2.imlib_get_color_modifier_tables(red_table, green_table, blue_table, alpha_table)
+                local red, green, blue, alpha = {}, {}, {}, {}
+                for i=0,255 do
+                    local c = red_table[i]
+                    red[i+1] = tonumber(c)
+                    c = green_table[i]
+                    green[i+1] = tonumber(c)
+                    c = blue_table[i]
+                    blue[i+1] = tonumber(c)
+                    c = alpha_table[i]
+                    alpha[i+1] = tonumber(c)
+                end
+                return red, green, blue, alpha
+            end,
+            reset = function()
+                sc()
+                imlib2.imlib_reset_color_modifier();
+            end,
+            apply = function()
+                sc()
+                imlib2.imlib_apply_color_modifier();
+            end,
+            applyToRectangle = function(self, x, y, w, h)
+                sc()
+                imlib2.imlib_apply_color_modifier_to_rectangle(x, y, w, h)
+            end,
+        }
+    end
 })
 
 -- Gradient / create_color_range
@@ -737,7 +846,8 @@ end
 local Image
 Image = setmetatable({}, {
     __call = function(self, w, h)
-        if not w and not clone then return nil, "Missing file or size" end
+        if not w then error("Missing parameters", 3) end
+
         local imlib2, set_color, im = imlib2, set_color
         local sc = function()
             if not im or im==ffi.NULL then return end --error('Trying to call destroyed object', 3) end
@@ -745,24 +855,25 @@ Image = setmetatable({}, {
         end
 
         local image_gc = function(self)
-            print("GC im:",im)
             if not im or im==ffi.NULL then return end
             sc()
             imlib2.imlib_free_image()
         end
 
         ctype = type(w)
-        if("string"==ctype and not y)then
+        if("string"==ctype and not h)then
             local err = ffi.new('Imlib_Load_Error [1]')
-            im = ffi.gc(imlib2.imlib_load_image_with_error_return(w, err), image_gc(im))
-            err = tonumber(err[0]) or 1111
+            im = ffi.gc(imlib2.imlib_load_image_with_error_return(w, err), image_gc)
+            err = tonumber(err[0])
             if 0 ~= err then
-                return nil, string.format( errors[err] or "Unknown error:"..err, w )
+                error( string.format( errors[err] or "Unknown error:"..err, w ), 3 )
             end
         elseif("cdata"==ctype)then
             im = ffi.gc(w, image_gc)
-        else
+        elseif tonumber(w) and tonumber(h) then
             im = ffi.gc(imlib2.imlib_create_image(w,h), image_gc)
+        else
+            error("Missing parameters", 3)
         end
 
         local updates = imlib2.imlib_updates_init()
@@ -780,10 +891,10 @@ Image = setmetatable({}, {
                 return imlib2.imlib_image_draw_pixel(x, y, update or 0)
             end,
             getPixel = function(self, x, y)
-                local c = Color()
                 sc()
+                local c = Color_()
                 imlib2.imlib_image_query_pixel(x, y, c)
-                return c
+                return Color(c)
             end,
             drawLine = function(self, x1, y1, x2, y2, c, update)
                 sc()
@@ -968,6 +1079,39 @@ Image = setmetatable({}, {
                 imlib2.imlib_image_set_format(fmt)
             end,
 
+            -- a bit useless as apparently not saved with the picture...
+            -- setData = function(self, key, data, value)
+            --     local data = ffi.new('char [?]',#data, data)
+            --     sc()
+            --     imlib2.imlib_image_attach_data_value(key, data, value, nil)
+            -- end,
+            -- getData = function(self, key)
+            --     sc()
+            --     local data = imlib2.imlib_image_get_attached_data(key)
+            --     local data = ffi.cast('char*',data)
+            --     print(data)
+            --     data = data~=ffi.NULL and ffi.string(data) or nil
+            --     return data
+            -- end,
+            -- deleteData = function(self,key)
+            -- end,
+
+            dump = function()
+                sc()
+                local data = imlib2.imlib_image_get_data_for_reading_only()
+
+                local im = ffi.new('ImageData')
+                im.data = data
+                im.has_alpha = imlib2.imlib_image_has_alpha()
+                im.w = imlib2.imlib_image_get_width()
+                im.h = imlib2.imlib_image_get_height()
+
+                local length = ffi.new('int [1]')
+                local result = dumper.save(im, length)
+                local data = ffi.string(result, length[0])
+                dumper.free_data(result)
+                return data
+            end,
             save = function(self, path)
                 local err = ffi.new('Imlib_Load_Error [1]')
                 sc()
@@ -1020,16 +1164,17 @@ local getAntiAlias = function()
 end
 
 return {
-    setCacheSize = setCacheSize,
-    getCacheSize = getCacheSize,
-    flushCache   = flushCache,
-    setAntiAlias = setAntiAlias ,
-    getAntiAlias = getAntiAlias,
+    setCacheSize  = setCacheSize,
+    getCacheSize  = getCacheSize,
+    flushCache    = flushCache,
+    setAntiAlias  = setAntiAlias ,
+    getAntiAlias  = getAntiAlias,
 
-    Gradient = Gradient,
-    Color = Color,
-    Image = Image,
-    Border = Border,
-    Polygon = Polygon,
-    Font = Font,
+    Gradient      = Gradient,
+    Color         = Color,
+    ColorModifier = ColorModifier,
+    Image         = Image,
+    Border        = Border,
+    Polygon       = Polygon,
+    Font          = Font,
 }
