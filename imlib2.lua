@@ -1,5 +1,8 @@
 #!/usr/bin/env luajit
 
+local bit = bit or bit32
+local band, bor, lshift, rshift = bit.band, bit.bor, bit.lshift, bit.rshift
+
 local ffi = require"ffi"
 
 ffi.cdef([[
@@ -400,20 +403,6 @@ ffi.cdef([[
     void imlib_image_clear_color(int r, int g, int b, int a);
 ]])
 
--- data dumper
-
-ffi.cdef([[
-    struct _image_data{
-       int               w, h, has_alpha;
-       DATA32           *data;
-    };
-    typedef struct _image_data ImageData;
-
-    char *save(ImageData *im, int *length);
-    void free_data(char *data);
-]])
-local dumper = ffi.load('./dump.so')
-
 local function get_flags()
   local proc = io.popen("imlib2-config --cflags --libs", "r")
   local flags = proc:read("*a")
@@ -450,6 +439,72 @@ local errors = {
     [ffi.C.IMLIB_LOAD_ERROR_OUT_OF_DISK_SPACE] = "out of disk space writing to file '%s'",
     [ffi.C.IMLIB_LOAD_ERROR_UNKNOWN] = "Unknown error",
 }
+
+-- data dumper
+
+ffi.cdef([[
+    struct _image_data{
+       int               w, h, has_alpha;
+       DATA32           *data;
+    };
+    typedef struct _image_data ImageData;
+
+    char *save(ImageData *im, int *length);
+    void free_data(char *data);
+]])
+local dumper = ffi.load('./dump.so')
+
+-- plugins
+
+local plugins = {}
+ffi.cdef([[
+    struct _filter {
+        int filterW;
+        int filterH;
+        double factor;
+        double bias;
+        double *matrix;
+    };
+    typedef struct _filter Filter;
+
+    enum _grayscale_method {
+        NONE,
+        LIGTHNESS,
+        AVERAGE,
+        LUMINOSITY
+    };
+    typedef enum _grayscale_method Grayscale;
+
+    void transform(Imlib_Image im, Filter f, Grayscale grayscale);
+    void grayscale(Imlib_Image im, Grayscale method);
+    void motionblur(Imlib_Image im);
+    void emboss(Imlib_Image im, double factor, double bias, Grayscale gs);
+
+    void quickremovenoise(Imlib_Image im, double factor, double bias);
+    void removenoise(Imlib_Image im, Filter filter);
+]])
+plugins = ffi.load('./transform.so')
+
+local Filter
+local filter_mt = {}
+Filter = ffi.metatype('Filter', filter_mt)
+
+
+-- pluggable filters
+
+-- TODO: load on-demand from filters/
+local filters = require"imfilters"
+local function call_filter(name, im,...)
+    if not im or im==ffi.NULL then return end --error('Trying to call destroyed object', 3) end
+    imlib2.imlib_context_set_image(im)
+    local w, h = imlib2.imlib_image_get_width(), imlib2.imlib_image_get_height()
+    local src = imlib2.imlib_image_get_data()
+    filters[name][1](src, w, h,...)
+    -- TODO: eg. require("imfilters."..name)[1](src,w,h)
+    imlib2.imlib_image_put_back_data(src)
+end
+
+-------------
 
 local Color, Color_
 local color_mt = {
@@ -711,6 +766,9 @@ local Polygon = setmetatable({}, {
                 local res = imlib2.imlib_polygon_contains_point(po, x, y)
                 return res==1
             end,
+            __get = function()
+                return po
+            end,
         }
         return self
     end
@@ -848,7 +906,7 @@ Image = setmetatable({}, {
     __call = function(self, w, h)
         if not w then error("Missing parameters", 3) end
 
-        local imlib2, set_color, im = imlib2, set_color
+        local imlib2, call_filter, set_color, im = imlib2, call_filter, set_color
         local sc = function()
             if not im or im==ffi.NULL then return end --error('Trying to call destroyed object', 3) end
             imlib2.imlib_context_set_image(im)
@@ -896,6 +954,37 @@ Image = setmetatable({}, {
                 imlib2.imlib_image_query_pixel(x, y, c)
                 return Color(c)
             end,
+            getPixelHSVA = function(self, x, y)
+                sc()
+                local hue, saturation, value, alpha = 
+                    ffi.new('float[1]'),
+                    ffi.new('float[1]'),
+                    ffi.new('float[1]'),
+                    ffi.new('int[1]')
+                imlib2.imlib_image_query_pixel_hsva(x, y, hue, saturation, value, alpha)
+                return hue[0], saturation[0], value[0], alpha[0]
+            end,
+            getPixelHLSA = function(self, x, y)
+                sc()
+                local hue, lightness, value, alpha = 
+                    ffi.new('float[1]'),
+                    ffi.new('float[1]'),
+                    ffi.new('float[1]'),
+                    ffi.new('int[1]')
+                imlib2.imlib_image_query_pixel_hlsa(x, y, hue, lightness, saturation, alpha)
+                return hue[0], lightness[0], saturation[0], alpha[0]
+            end,
+            getPixelCMYA = function(self, x, y)
+                sc()
+                local cyan, magenta, yellow, alpha = 
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]')
+                imlib2.imlib_image_query_pixel_cmya(x, y, cyan, magenta, yellow, alpha)
+                return cyan[0], magenta[0], yellow[0], alpha[0]
+            end,
+
             drawLine = function(self, x1, y1, x2, y2, c, update)
                 sc()
                 if(c)then set_color(c) end
@@ -913,7 +1002,7 @@ Image = setmetatable({}, {
             fillRectangle = function(self, x, y, w, h, c)
                 sc()
                 if(c)then set_color(c) end
-                imlib2.imlib_image_fill_rectangle(x, y, w, h, update or 0)
+                imlib2.imlib_image_fill_rectangle(x, y, w, h)
             end,
             scrollRectangle = function(self, x, y, w, h, dx, dy)
                 sc()
@@ -942,15 +1031,15 @@ Image = setmetatable({}, {
                 if(c)then set_color(c) end
                 imlib2.imlib_image_fill_ellipse(xc, yc, a, b);
             end,
-            drawPolygon = function(self, poly, c)
+            drawPolygon = function(self, poly, c, closed)
                 if(c)then set_color(c) end
                 sc()
-                imlib2.imlib_image_draw_polygon(poly)
+                imlib2.imlib_image_draw_polygon(poly.__get(), closed or 0)
             end,
-            fillPolygon = function(self, poly, closed, c)
+            fillPolygon = function(self, poly, c)
                 if(c)then set_color(c) end
                 sc()
-                imlib2.imlib_image_fill_polygon(poly, closed or 0);
+                imlib2.imlib_image_fill_polygon(poly.__get());
             end,
             drawText = function(self, font, text, x, y, c)
                 imlib2.imlib_context_set_font(font.__get())
@@ -970,6 +1059,20 @@ Image = setmetatable({}, {
                 end
             end,
 
+            clip = function(self, x, y, w, h)
+                sc()
+                imlib2.imlib_context_set_cliprect(x, y, w, h)
+            end,
+            getClip = function(self)
+                local x, y, w, h =
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]'),
+                    ffi.new('int[1]')
+                sc()
+                imlib2.imlib_context_get_cliprect(x,y,w,h)
+                return x[0], y[0], w[0], h[0]
+            end,
 
             crop = function(self, x, y, w, h)
                 sc()
@@ -985,8 +1088,18 @@ Image = setmetatable({}, {
                 imlib2.imlib_free_image()
                 im = new
             end,
-            rotate = function(self, angle)
+            orientate = function(self,level)
+                -- level * 90
                 sc()
+                imlib2.imlib_image_orientate(level)
+            end,
+            rotate = function(self, angle)
+                if angle == 0 or angle == 360 then return end
+                sc()
+                if (angle%90==0)then
+                    return imlib2.imlib_image_orientate(angle/90)
+                end
+                local angle = math.pi * angle / 180
                 local new = ffi.gc(imlib2.imlib_create_rotated_image(angle), image_gc)
                 sc()
                 imlib2.imlib_free_image()
@@ -1004,18 +1117,7 @@ Image = setmetatable({}, {
                 sc()
                 imlib2.imlib_image_flip_diagonal()
             end,
-            orientate = function(self,deg)
-                sc()
-                imlib2.imlib_image_orientate(deg)
-            end,
-            blur = function(self,rad)
-                sc()
-                imlib2.imlib_image_blur(rad)
-            end,
-            sharpen = function(self,rad)
-                sc()
-                imlib2.imlib_image_sharpen(rad)
-            end,
+
             tile = function()
                 sc()
                 imlib2.imlib_image_tile()
@@ -1028,6 +1130,97 @@ Image = setmetatable({}, {
                 sc()
                 imlib2.imlib_image_tile_vertical()
             end,
+            blur = function(self,rad)
+                sc()
+                imlib2.imlib_image_blur(rad)
+            end,
+            sharpen = function(self,rad)
+                sc()
+                imlib2.imlib_image_sharpen(rad)
+            end,
+
+            -- transform plugins
+            transform = function(self, matrix, factor, bias, grayscale)
+                local h = math.sqrt(#matrix)
+                local w = h
+                local factor = factor
+                if not factor then
+                    local sum = 0.0
+                    for _,v in next,matrix do
+                        sum = sum + v
+                    end
+                    factor = 1.0 / (sum>0 and sum or 1.0)
+                end
+                local bias = bias or 0.0
+                
+                local filter = Filter()
+                filter.filterW = w
+                filter.filterH = h
+                filter.factor = factor
+                filter.bias = bias
+                filter.matrix = ffi.new("double [?]", #matrix, unpack(matrix))
+                sc()
+                plugins.transform(im, filter, grayscale or 0)
+            end,
+            grayscale = function(self, method)
+                sc()
+                plugins.grayscale(im, method or 0)
+            end,
+            motionblur = function(self)
+                sc()
+                plugins.motionblur(im)
+            end,
+            emboss = function(self, grayscale, factor, bias)
+                sc()
+                plugins.emboss(im, factor or 0, bias or 0, grayscale or 0)
+            end,
+            removenoise = function(self, matrix)
+                local h = math.sqrt(#matrix)
+                local w = h
+                local factor = factor
+                if not factor then
+                    local sum = 0.0
+                    for _,v in next,matrix do
+                        sum = sum + v
+                    end
+                    factor = 1.0 / (sum>0 and sum or 1.0)
+                end
+                local bias = bias or 0.0
+                
+                local filter = Filter()
+                filter.filterW = w
+                filter.filterH = h
+                filter.factor = factor
+                filter.bias = bias
+                filter.matrix = ffi.new("double [?]", #matrix, unpack(matrix))
+
+                sc()
+                plugins.removenoise(im, filter)
+            end,
+            quickremovenoise = function()
+                sc()
+                plugins.quickremovenoise(im, 0, 0)
+            end,
+
+            filter = function(self, name, ...)
+                call_filter(name, im, ...)
+            end,
+            -- TODO: get list of files, load them (require) and get info
+            listFilters = function()
+                local f = {}
+                for k,v in next,filters do
+                    f[k] = v.info
+                end
+                return f
+            end,
+            helpFilter = function(self, name, option)
+                if option then
+                    return filters[name].help[option] or "no help on "..option
+                else
+                    return filters[name].help or {}
+                end
+            end,
+
             clear = function()
                 sc()
                 imlib2.imlib_image_clear()
@@ -1095,6 +1288,19 @@ Image = setmetatable({}, {
             -- end,
             -- deleteData = function(self,key)
             -- end,
+
+            blend = function(self, other_im, merge_alpha, x, y, w, h, dx, dy, dw, dh)
+                sc()
+                imlib2.imlib_blend_image_onto_image(other_im.__get(), merge_alpha or 0, x, y, w, h, dx, dy, dw, dh)
+            end,
+
+            script = function(self, filter)
+                sc()
+                -- WARNING: imlib2 bug: scripts containing spaces are not executed
+                -- TODO: improve this parsing to take care of \"
+                --local filter = filter:gsub('%s','')
+                imlib2.imlib_apply_filter( ffi.cast('char*',filter) )
+            end,
 
             dump = function()
                 sc()
