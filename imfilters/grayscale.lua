@@ -19,13 +19,9 @@ local function grayscale(src, w, h, method)
             if("average"==method)then
                 grey = (r+g+b)/3
             elseif("lightness"==method)then
-                local max = r > g and r or g
-                max = max > b and max or b
-                local min = r < g and r or g
-                min = min < b and mn or b
-                grey = (mn + mx) / 2;
+                grey = (math.min(r,g,b) + math.max(r,g,b))/2
             elseif("luminosity"==method)then
-                grey = (0.21*r + 0.72*g + 0.07*b)
+                grey = (0.2126*r + 0.7152*g + 0.0722*b)
             else
                 grey = (r+g+b)/3
             end
