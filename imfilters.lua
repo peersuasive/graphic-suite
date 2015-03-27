@@ -14,6 +14,7 @@ local oil = require"imfilters.oil"
 local jitter = require"imfilters.jitter"
 local wgn = require"imfilters.wgn"
 local normalise = require"imfilters.normalise"
+local average = require"imfilters.average"
 
 return {
     grayscale = grayscale,
@@ -24,4 +25,5 @@ return {
     jitter = jitter,
     wgn = wgn,
     normalise = normalise,
+    average = average,
 }
