@@ -13,6 +13,7 @@ local twirl = require"imfilters.twirl"
 local oil = require"imfilters.oil"
 local jitter = require"imfilters.jitter"
 local wgn = require"imfilters.wgn"
+local normalise = require"imfilters.normalise"
 
 return {
     grayscale = grayscale,
@@ -22,4 +23,5 @@ return {
     oil = oil,
     jitter = jitter,
     wgn = wgn,
+    normalise = normalise,
 }
