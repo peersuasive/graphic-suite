@@ -2,6 +2,7 @@
 
 local bit = bit or bit32
 local band, bor, lshift, rshift = bit.band, bit.bor, bit.lshift, bit.rshift
+local floor, mmax, mmin, cos, sin = math.floor, math.max, math.min, math.cos, math.sin
 
 local ffi = require"ffi"
 
@@ -42,39 +43,6 @@ local dumper = ffi.load('./dump.so')
 -- plugins
 
 local plugins = {}
-ffi.cdef([[
-    struct _filter {
-        int filterW;
-        int filterH;
-        double factor;
-        double bias;
-        double *matrix;
-    };
-    typedef struct _filter Filter;
-
-    enum _grayscale_method {
-        NONE,
-        LIGTHNESS,
-        AVERAGE,
-        LUMINOSITY
-    };
-    typedef enum _grayscale_method Grayscale;
-
-    void transform(Imlib_Image im, Filter f, Grayscale grayscale);
-    void grayscale(Imlib_Image im, Grayscale method);
-    void motionblur(Imlib_Image im);
-    void emboss(Imlib_Image im, double factor, double bias, Grayscale gs);
-
-    void quickremovenoise(Imlib_Image im, double factor, double bias);
-    void removenoise(Imlib_Image im, Filter filter);
-]])
-plugins = ffi.load('./transform.so')
-
-local Filter
-local filter_mt = {}
-Filter = ffi.metatype('Filter', filter_mt)
-
-
 -- pluggable filters
 
 -- TODO: load on-demand from filters/
@@ -84,41 +52,147 @@ local function call_filter(name, im,...)
     imlib2.imlib_context_set_image(im)
     local w, h = imlib2.imlib_image_get_width(), imlib2.imlib_image_get_height()
     local src = imlib2.imlib_image_get_data()
-    filters[name][1](src, w, h,...)
     -- TODO: eg. require("imfilters."..name)[1](src,w,h)
-    imlib2.imlib_image_put_back_data(src)
+    local status, result = filters[name][1](src, w, h,...)
+    if status then
+        imlib2.imlib_image_put_back_data(src)
+    end
+    if(status==nil)then
+        return nil, result
+    else
+        return result
+    end
 end
 
 -------------
 
-local Color, Color_
+local Color, ColorHSLA
+-- ImageMagick's
+local function rgba_to_hsla(red, green, blue, alpha)
+    local alpha = alpha or 255
+    local b, delta, g, max, min, r
+    local hue, saturation, lightness
+    local q_scale = 1/255
+
+    r = q_scale*red
+    g = q_scale*green
+    b = q_scale*blue
+    max = mmax(r,mmax(g,b))
+    min = mmin(r,mmin(g,b))
+    lightness = ((min+max)/2)
+    delta = max-min
+    if (delta == 0.0) then
+        hue = 0
+        saturation = 0
+        return hue, saturation, lightness, alpha
+    end  
+    if (lightness < 0.5) then
+        saturation = (delta/(min+max))
+    else
+        saturation = (delta/(2-max-min))
+    end
+
+    if (r == max) then
+        hue= ( ( ((max-b)/6) + (delta/2) ) - ( ((max-g)/6) +(delta/2) ) ) / delta
+    else
+        if (g == max) then
+            hue = (1/3) + ( ( ((max-r)/6) + (delta/2) ) - ( ((max-b)/6) + (delta/2) ) ) / delta
+        elseif (b == max) then
+            hue = (2/3)+((((max-g)/6)+(delta/2))-(((max-r)/6)+ (delta/2)))/delta
+        end
+    end
+    if (hue < 0) then
+        hue = hue + 1
+    end
+    if (hue > 1) then
+        hue = hue - 1
+    end
+    return hue, saturation, lightness, alpha
+end
+
+local function ConvertHueToRGB(m1,m2,hue)
+    if (hue < 0) then
+        hue = hue + 1
+    end   
+    if (hue > 1) then
+        hue = hue - 1
+    end
+    if ((6*hue) < 1) then
+        return (m1 + 6 * (m2-m1) * hue)
+    end
+    if ((2*hue) < 1) then
+        return m2
+    end
+    if ((3*hue) < 2) then
+        return(m1 + 6 * (m2-m1) * (2/3 - hue))
+    end
+    return m1
+end
+local function hsla_to_rgba(hue, saturation, lightness, alpha)
+    local alpha = alpha or 255
+    local b, g, r, m1, m2
+    local red, green, blue
+    if (saturation == 0) then
+        local r = floor(255 * lightness)
+        return r,r,r, alpha
+    end  
+    if (lightness < 0.5) then
+        m2 = lightness * (saturation + 1)
+    else
+        m2 = (lightness + saturation) - (lightness * saturation)
+    end
+
+    m1 = 2 * lightness - m2
+    r = ConvertHueToRGB(m1, m2, hue + 1/3)
+    g = ConvertHueToRGB(m1, m2, hue)
+    b = ConvertHueToRGB(m1, m2, hue - 1/3)
+    red   = floor(255 * r + 0.5)
+    green = floor(255 * g + 0.5)
+    blue  = floor(255 * b + 0.5)
+
+    return red, green, blue, alpha
+end
+
+
+local Color_
 local color_mt = {
     __index = {
+        rgba = true,
         clone = function(self)
             return ffi.new('Imlib_Color',{self.alpha, self.red, self.green, self.blue})
         end,
+        toHSLA = function(self)
+            return ColorHSLA( rgba_to_hsla(self.red, self.green, self.blue, self.alpha) )
+        end,
     },
     __tostring = function(self)
-        return string.format("%d,%d,%d,%d",self.red, self.green, self.blue, self.alpha)
+        return string.format("Color(RGBA) %d, %d, %d, %d",self.red, self.green, self.blue, self.alpha)
     end,
 }
 Color_ = ffi.metatype('Imlib_Color', color_mt)
 Color = setmetatable({}, {
     __call = function(self,r,g,b,a)
-        local color
-        if("cdata"==type(r))then
+        local color, t = nil, type(r)
+        if("cdata"==t)then
             color = r
+        elseif("table"==t)then
+            if(t.hsla)then
+                color = Color_(hsla_to_rgba( r.hue, r.lightness, r.saturation, r.alpha ))
+            else
+                return nil, "ColorRGBA: Unknown Import Color type"
+            end
         else
             local a = a or 255
-            assert( (a and r and g and b) and (a>-1 and a<256) 
+            assert( (a and r and g and b) and (a>-1 and a<256)
                 and (r>-1 and r<256) 
                 and (g>-1 and g<256) 
                 and (b>-1 and b<256), "values must be >= 0 and <= 255")
             color = Color_(a,r,g,b)
         end
+        if not color then return nil, "Missing or wrong parameters" end
         return setmetatable({}, {
             __tostring = function()
-                return string.format("%d,%d,%d,%d",color.red, color.green, color.blue, color.alpha)
+                return string.format("Color(RGBA) %d, %d, %d, %d",color.red, color.green, color.blue, color.alpha)
             end,
             __index = function(self,k)
                 return color[k]
@@ -175,6 +249,46 @@ Color = setmetatable({}, {
         return string.format("%d,%d,%d,%d",color.red, color.green, color.blue, color.alpha)
     end,
 })
+
+ColorHSLA = setmetatable({}, {
+    __call = function(self,h,s,l,a)
+        local h,s,l, a = h,s,l, a or 255
+        if("table"==type(h))then
+            if(h.hsla)then
+                l = h.l
+                s = h.s
+                h = h.h
+            elseif(h.rgba)then
+                h,l,s,a = rgba_to_hsla(h.red, h.green, h.blue, h.alpha)
+            else
+                return nil, "ColorHSLA: Unknow Import Color type"
+            end
+        else
+            h = mmax(mmin(h or 0, 360), 0)
+            s = mmax(mmin(s or 0, 100), 0)
+            l = mmax(mmin(l or 0, 100), 0)
+        end
+        local self = {
+            hsla = true,
+            hue = h,
+            lightness = l,
+            saturation = s,
+            alpha = a,
+            toRGBA = function(self)
+                return Color(hsla_to_rgba(self.hue, self.saturation, self.lightness, self.alpha))
+            end,
+            clone = function(self)
+                return ColorHSLA(self.hue, self.saturation, self.lightness, self.alpha)
+            end,
+        }
+        return setmetatable(self, {
+            __tostring = function(self)
+                return string.format("Color(HSLA) %d, %.1f, %.1f, %d",floor(self.hue*360+0.5), self.lightness*100, self.saturation*100, self.alpha)
+            end,
+        })
+    end,
+})
+
 
 local ColorModifier
 ColorModifier = setmetatable({}, {
@@ -364,6 +478,7 @@ local Polygon = setmetatable({}, {
 local Font_dirs = {right=0, left=1, down=2, up=3, angle=4, [0]="right", [1]="left", [2]="down", [3]="up", [4]="angle"}
 local Font = setmetatable({}, {
     __call = function(self, path)
+        local path = path
         local imlib2, fo = imlib2
         local font_gc = function()
             if not fo or fo==ffi.NULL then return end
@@ -375,7 +490,6 @@ local Font = setmetatable({}, {
         end
         fo = ffi.gc(imlib2.imlib_load_font(path), font_gc)
         if not fo or fo==ffi.NULL then return nil, "Can't find font: "..path end
-        local path = path
         local self = {
             getSize = function(self, text)
                 local text = text or ""
@@ -488,36 +602,50 @@ local set_color = function(c)
 end
 local Image
 Image = setmetatable({}, {
-    __call = function(self, w, h)
+    __call = function(self, w, h, colour, tr)
         if not w then error("Missing parameters", 3) end
 
         local imlib2, call_filter, set_color, im = imlib2, call_filter, set_color
-        local sc = function()
-            if not im or im==ffi.NULL then return end --error('Trying to call destroyed object', 3) end
-            imlib2.imlib_context_set_image(im)
+        local sc = function(img)
+            local img = img or im
+            if not img or img==ffi.NULL then return end --error('Trying to call destroyed object', 3) end
+            imlib2.imlib_context_set_image(img)
         end
 
-        local image_gc = function(self)
-            if not im or im==ffi.NULL then return end
-            sc()
-            imlib2.imlib_free_image()
+        local image_gc = function(img)
+            local img = img
+            return function()
+                if not img or img==ffi.NULL then return end
+                imlib2.imlib_context_set_image(img)
+                imlib2.imlib_free_image()
+            end
         end
 
         ctype = type(w)
-        if("string"==ctype and not h)then
+        if("string"==ctype and not h)then -- load from file
             local err = ffi.new('Imlib_Load_Error [1]')
-            im = ffi.gc(imlib2.imlib_load_image_with_error_return(w, err), image_gc)
+            im = imlib2.imlib_load_image_with_error_return(w, err)
             err = tonumber(err[0])
             if 0 ~= err then
                 error( string.format( errors[err] or "Unknown error:"..err, w ), 3 )
             end
-        elseif("cdata"==ctype)then
-            im = ffi.gc(w, image_gc)
-        elseif tonumber(w) and tonumber(h) then
-            im = ffi.gc(imlib2.imlib_create_image(w,h), image_gc)
+        elseif("cdata"==ctype)then -- clone existing image
+            im = w
+        elseif tonumber(w) then -- create new image
+            local h = tonumber(h) or w
+            im = imlib2.imlib_create_image(w,h)
+            sc()
+            if(colour)then
+                set_color(colour)
+                imlib2.imlib_image_fill_rectangle(0, 0, w, h)
+            end
+            if(tr)then
+                imlib2.imlib_image_set_has_alpha(0)
+            end
         else
             error("Missing parameters", 3)
         end
+        im = ffi.gc(im, image_gc(im))
 
         local updates = imlib2.imlib_updates_init()
 
@@ -525,7 +653,7 @@ Image = setmetatable({}, {
             fillGradient = function(self, gradient, x, y, w, h, angle)
                 local angle = angle or 0.0
                 sc()
-                imlib2.imlib_context_set_color_range(gradient());
+                imlib2.imlib_context_set_color_range(gradient.__get());
                 imlib2.imlib_image_fill_color_range_rectangle(x, y, w, h, angle);
             end,
             drawPixel = function(self, x, y, c, update)
@@ -549,14 +677,14 @@ Image = setmetatable({}, {
                 imlib2.imlib_image_query_pixel_hsva(x, y, hue, saturation, value, alpha)
                 return hue[0], saturation[0], value[0], alpha[0]
             end,
-            getPixelHLSA = function(self, x, y)
+            getPixelHSLA = function(self, x, y)
                 sc()
                 local hue, lightness, value, alpha = 
                     ffi.new('float[1]'),
                     ffi.new('float[1]'),
                     ffi.new('float[1]'),
                     ffi.new('int[1]')
-                imlib2.imlib_image_query_pixel_hlsa(x, y, hue, lightness, saturation, alpha)
+                imlib2.imlib_image_query_pixel_hsla(x, y, hue, lightness, saturation, alpha)
                 return hue[0], lightness[0], saturation[0], alpha[0]
             end,
             getPixelCMYA = function(self, x, y)
@@ -659,20 +787,6 @@ Image = setmetatable({}, {
                 return x[0], y[0], w[0], h[0]
             end,
 
-            crop = function(self, x, y, w, h)
-                sc()
-                local new = ffi.gc(imlib2.imlib_create_cropped_image(x, y, w, h), image_gc)
-                sc()
-                imlib2.imlib_free_image()
-                im = new
-            end,
-            cropAndScale = function(self, x, y, w, h, dw, dh)
-                sc()
-                local new = ffi.gc(imlib2.imlib_create_cropped_scaled_image(x, y, w, h, dw, dh), image_gc)
-                sc()
-                imlib2.imlib_free_image()
-                im = new
-            end,
             orientate = function(self,level)
                 -- level * 90
                 sc()
@@ -685,10 +799,10 @@ Image = setmetatable({}, {
                     return imlib2.imlib_image_orientate(angle/90)
                 end
                 local angle = math.pi * angle / 180
-                local new = ffi.gc(imlib2.imlib_create_rotated_image(angle), image_gc)
+                local new = imlib2.imlib_create_rotated_image(angle)
                 sc()
                 imlib2.imlib_free_image()
-                im = new
+                im = ffi.gc(new, image_gc(new))
             end,
             flipHorizontal = function()
                 sc()
@@ -747,48 +861,48 @@ Image = setmetatable({}, {
                 sc()
                 plugins.transform(im, filter, grayscale or 0)
             end,
-            grayscale = function(self, method)
-                sc()
-                plugins.grayscale(im, method or 0)
-            end,
-            motionblur = function(self)
-                sc()
-                plugins.motionblur(im)
-            end,
-            emboss = function(self, grayscale, factor, bias)
-                sc()
-                plugins.emboss(im, factor or 0, bias or 0, grayscale or 0)
-            end,
-            removenoise = function(self, matrix)
-                local h = math.sqrt(#matrix)
-                local w = h
-                local factor = factor
-                if not factor then
-                    local sum = 0.0
-                    for _,v in next,matrix do
-                        sum = sum + v
-                    end
-                    factor = 1.0 / (sum>0 and sum or 1.0)
-                end
-                local bias = bias or 0.0
-                
-                local filter = Filter()
-                filter.filterW = w
-                filter.filterH = h
-                filter.factor = factor
-                filter.bias = bias
-                filter.matrix = ffi.new("double [?]", #matrix, unpack(matrix))
+            -- grayscale = function(self, method)
+            --     sc()
+            --     plugins.grayscale(im, method or 0)
+            -- end,
+            -- motionblur = function(self)
+            --     sc()
+            --     plugins.motionblur(im)
+            -- end,
+            -- emboss = function(self, grayscale, factor, bias)
+            --     sc()
+            --     plugins.emboss(im, factor or 0, bias or 0, grayscale or 0)
+            -- end,
+            --removenoise = function(self, matrix)
+            --    local h = math.sqrt(#matrix)
+            --    local w = h
+            --    local factor = factor
+            --    if not factor then
+            --        local sum = 0.0
+            --        for _,v in next,matrix do
+            --            sum = sum + v
+            --        end
+            --        factor = 1.0 / (sum>0 and sum or 1.0)
+            --    end
+            --    local bias = bias or 0.0
+            --    
+            --    local filter = Filter()
+            --    filter.filterW = w
+            --    filter.filterH = h
+            --    filter.factor = factor
+            --    filter.bias = bias
+            --    filter.matrix = ffi.new("double [?]", #matrix, unpack(matrix))
 
-                sc()
-                plugins.removenoise(im, filter)
-            end,
-            quickremovenoise = function()
-                sc()
-                plugins.quickremovenoise(im, 0, 0)
-            end,
+            --    sc()
+            --    plugins.removenoise(im, filter)
+            --end,
+            --quickremovenoise = function()
+            --    sc()
+            --    plugins.quickremovenoise(im, 0, 0)
+            --end,
 
             filter = function(self, name, ...)
-                call_filter(name, im, ...)
+                return call_filter(name, im, ...)
             end,
             -- TODO: get list of files, load them (require) and get info
             listFilters = function()
@@ -834,9 +948,9 @@ Image = setmetatable({}, {
                 local r = imlib2.imlib_image_has_alpha()
                 return r==1
             end,
-            setAlpha = function(alpha)
+            setAlpha = function(self,alpha)
                 sc()
-                imlib2.imlib_image_set_has_alpha(alpha and 1 or 0)
+                imlib2.imlib_image_set_has_alpha(alpha or 0)
             end,
 
             getFilename = function()
@@ -874,9 +988,147 @@ Image = setmetatable({}, {
             -- deleteData = function(self,key)
             -- end,
 
-            blend = function(self, other_im, merge_alpha, x, y, w, h, dx, dy, dw, dh)
+            blend_old = function(self, src, merge_alpha, x, y, w, h, dx, dy, dw, dh)
+                local x,y = x or 0, y or 0
+                local w,h = w or src:getWidth(), h or src:getHeight()
+                local dx, dy = dx or 0, dy or 0
                 sc()
-                imlib2.imlib_blend_image_onto_image(other_im.__get(), merge_alpha or 0, x, y, w, h, dx, dy, dw, dh)
+                local dw, dh = dw or imlib2.imlib_image_get_width(), dh or imlib2.imlib_image_get_height()
+                imlib2.imlib_blend_image_onto_image(src.__get(), merge_alpha or 0, x or 0, y or 0, w, h, dx, dy, dw, dh)
+            end,
+            --[[- blend(width,[height],{option=value,...})
+                
+                blend, resize or scale an image onto a new image or in-place
+
+                width, height: resize to widht and height (height=width if omitted)
+                options:
+                keep_aspect: keep width/height aspect ratio (omit width to to scale with height)
+                in_place: blend onto current image instead of creating a new one
+                colour: set background colour
+                transparent: active alpha channel on background colour or set a transparent background (default: black)
+                merge_alpha: when background colour is provided, blend image with background alpha channel
+                x,y,w,h: use this portion of source
+                dx,dy: put source image at x,y onto destination
+                dw,dh: set destination image width and height (height=width if not provided)
+                @return image or nil[, error]
+            --]]
+            blend = function(self,...)
+                local n, args = select('#',...), {...}
+                local opts = select(n,...)
+                if("table"==type(opts))then args[n]=nil else opts = {} end
+
+                local nw, nh = unpack(args)
+                nw = nw~=0 and nw or nil
+                nh = nh~=0 and nh or nil
+                if not(nw or nh) then return nil, "Missing dimension" end
+                local keep_aspect, in_place = not(nh) and true or opts.keep_aspect, opts.in_place
+                local x,y,dx,dy = opts.x or 0, opts.y or 0, opts.dx or 0, opts.dy or 0
+                local w, h = opts.w or self:getWidth(), opts.h or self:getHeight()
+                local tr = opts.transparent
+                local colour = opts.colour or opts.color
+                local alpha = opts.merge_alpha and 0 or 1
+                -- don't merge alpha without a colour
+                alpha = not(tr) or colour and alpha or 1
+                if(keep_aspect)then
+                    local r = h/w
+                    if(nw)then -- width provided
+                        nh = nw*r
+                    else -- height provided
+                        nw = nh/r
+                    end
+                end
+                nh = nh or nw
+                if not(nw and nh) then return nil, "Missing dimension" end
+                local dw, dh = opts.dw or nw, opts.dh or nh
+
+                if(in_place)then
+                    local new = imlib2.imlib_create_image(dw,dh)
+                    sc(new)
+                    if(tr)then imlib2.imlib_image_set_has_alpha(tr) end
+                    if(colour)then
+                        set_color(colour)
+                        imlib2.imlib_image_fill_rectangle(0, 0, dw, dh)
+                    end
+                    imlib2.imlib_blend_image_onto_image(im, alpha, x,y,w,h, dx,dy,nw,nh)
+                    sc()
+                    imlib2.imlib_free_image()
+                    im = ffi.gc(new, image_gc(new))
+                else
+                    local dest = Image(dw,dh, colour, tr)
+                    sc(dest.__get())
+                    imlib2.imlib_blend_image_onto_image(im, alpha, x,y,w,h, dx,dy,nw,nh)
+                    return dest
+                end
+            end,
+            resize = function(self,dw,dh,in_place)
+                local in_place = (in_place==nil) and true or in_place
+                local w, h = self:getWidth(), self:getHeight()
+                local dw, dh = dw, dh or dw
+                local new = imlib2.imlib_create_image(dw,dh)
+                if(in_place)then
+                    sc(new)
+                    imlib2.imlib_blend_image_onto_image(im, 0, 0,0,w,h, 0,0,dw,dh)
+                    sc()
+                    imlib2.imlib_free_image()
+                    im = ffi.gc(new, image_gc)
+                else
+                    local dest = Image(new)
+                    sc(new)
+                    imlib2.imlib_blend_image_onto_image(im, 0, 0,0,w,h, 0,0,dw,dh)
+                    return dest
+                end
+            end,
+            scale = function(self, ratio, in_place)
+                if not ratio then return end
+                local in_place = (in_place==nil) and true or in_place
+                local w, h = self:getWidth(), self:getHeight()
+                local r = h/w
+                local dw = w*ratio
+                local dh = dw*r
+                local new = imlib2.imlib_create_image(dw,dh)
+                if(in_place)then
+                    sc(new)
+                    imlib2.imlib_blend_image_onto_image(im, 0, 0,0,w,h, 0,0,dw,dh)
+                    sc()
+                    imlib2.imlib_free_image()
+                    im = ffi.gc(new, image_gc)
+                else
+                    local dest = Image(new)
+                    sc(new)
+                    imlib2.imlib_blend_image_onto_image(im, 0, 0,0,w,h, 0,0,dw,dh)
+                    return dest
+                end
+            end,
+            --[[- crop(x,y,w,h,[dw,dh],[in-place])
+
+                crop or crop and scale an image in-place or as a new image
+
+                x,y,w,h: dimension of source to crop
+                dw,dh: dimension of target image, if scaling (default: nil, no scaling)
+                in-place: crop in place or return a new image (default: true)
+            --]]
+            crop = function(self, x, y, w, h,...)
+                local n, in_place, dw, dh = select('#',...)
+                if(n==1)then -- crop in-place
+                    in_place = ...
+                else -- crop and scale
+                    dw,dh,in_place = ...
+                end
+                local in_place = in_place==nil and true or in_place
+                sc()
+                local new
+                if(dw and dh)then
+                    new = imlib2.imlib_create_cropped_scaled_image(x, y, w, h, dw, dh)
+                else
+                    new = imlib2.imlib_create_cropped_image(x, y, w, h)
+                end
+                if(in_place)then
+                    sc()
+                    imlib2.imlib_free_image()
+                    im = ffi.gc(new, image_gc)
+                else
+                    return Image(new)
+                end
             end,
 
             script = function(self, filter)
@@ -887,6 +1139,29 @@ Image = setmetatable({}, {
                 imlib2.imlib_apply_filter( ffi.cast('char*',filter) )
             end,
 
+            --
+            data = function()
+                sc()
+                local w,h = imlib2.imlib_image_get_width(), imlib2.imlib_image_get_height()
+                local data = imlib2.imlib_image_get_data_for_reading_only()
+                local size = w*h
+
+                -- works, but color conversion issue: alpha and blue are reversed...
+                --return ffi.string(ffi.cast('unsigned char*',data), w*h*ffi.sizeof('DATA32')), w, h
+
+                ---[[
+                local str = ffi.new('unsigned char [?]', ffi.sizeof('unsigned int') * w * h)
+                local c, off = 0, ffi.sizeof('unsigned int')
+                for i=0,w*h-1 do
+                    str[c]   = band(rshift(data[i], 24), 0xff)
+                    str[c+1] = band(rshift(data[i], 16), 0xff)
+                    str[c+2] = band(rshift(data[i], 8) , 0xff)
+                    str[c+3] = band(data[i] , 0xff)
+                    c = c + off
+                end
+                return ffi.string( str, size*ffi.sizeof('DATA32') ), w, h
+                --]]
+            end,
             dump = function()
                 sc()
                 local data = imlib2.imlib_image_get_data_for_reading_only()
@@ -930,7 +1205,11 @@ Image = setmetatable({}, {
                 return im
             end
         }
-        return self
+        return setmetatable(self, {
+            __tostring = function()
+                return string.format("Image(%p)",im)
+            end
+        })
     end
 })
 
@@ -963,6 +1242,7 @@ return {
 
     Gradient      = Gradient,
     Color         = Color,
+    ColorHSLA     = ColorHSLA,
     ColorModifier = ColorModifier,
     Image         = Image,
     Border        = Border,

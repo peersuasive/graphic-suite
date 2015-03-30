@@ -66,11 +66,9 @@ return {
         version = 0.1
     },
     help = {
-        [[Usage: oil()]],
-        factor = [[Amout of effect (default: 5)]],
-        method = [[Can be one of:
-        swirl (default)
-        twist]]
+        [[Usage: oil(radius,level)]],
+        radius = [[radius]],
+        level = [[level of saturation]]
     },
     oil
 }
