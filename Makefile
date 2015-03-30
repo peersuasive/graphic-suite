@@ -2,7 +2,8 @@ CC = gcc
 
 CFLAGS = -fPIC -std=c99
 
-all: dump.so sharpen.so transform.so
+all: dump.so 
+#sharpen.so transform.so
 
 .c.o:
 	@echo Compiling $@...
@@ -31,6 +32,15 @@ transform.o: transform.c transform.h
 transform.so: transform.o
 	@echo Linking $@...
 	@$(CC) $(LDFLAGS) -shared -o $@ $< `pkg-config --libs imlib2` 
+
+testit.o: testit.c
+	@echo Compiling $@...
+	@$(CC) $(CFLAGS) `pkg-config --cflags lua5.1` -c -o $@ $<
+
+testit.so: testit.o
+	@echo Linking $@...
+	@$(CC) $(LDFLAGS) -shared -o $@ $< `pkg-config --libs imlib2` 
+
 
 tests:
 	lunit.sh -i luajit test/*
