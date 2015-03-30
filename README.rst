@@ -4,7 +4,7 @@ draft for a graphic suite
 
 (based on imlib2)
 
-ffi binding, greatly inspired from `lua-imlib2 <https://github.com/asb/lua-imlib2>`__
+ffi binding, greatly inspired by `lua-imlib2 <https://github.com/asb/lua-imlib2>`__
 
 filters are implemented based on different sources (see comments in code)
 
@@ -198,11 +198,11 @@ filters
 ~~~~~~~
 
     transform (matrix, factor, bias, grayscale)
-        transform with a matrix (see imfilters/transform)
+        apply a transformation matrix (see imfilters/transform)
 
     filter (name, ...)
         transform filter to use
-        
+ 
     listFilters ()
         list available filters
 
@@ -246,7 +246,7 @@ image manipulation
         options:
 
         keep_aspect
-            keep width/height aspect ratio (omit width to to scale with height)
+            keep width/height aspect ratio (omit width to scale with height)
 
         in_place
             blend onto current image instead of creating a new one
