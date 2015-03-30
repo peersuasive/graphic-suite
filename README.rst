@@ -130,7 +130,7 @@ Image("file.ext")
 drawing methods
 ~~~~~~~~~~~~~~~
 
-    fillGradient (gradient, x, y, w, h, angle)
+    fillGradient (Gradient, x, y, w, h, angle)
 
     drawPixel (x, y, c, update)
 
@@ -142,11 +142,11 @@ drawing methods
 
     getPixelCMYA (x, y)
 
-    drawLine (x1, y1, x2, y2, c, update)
+    drawLine (x1, y1, x2, y2, Color, update)
 
-    drawRectangle (x, y, w, h, c, update)
+    drawRectangle (x, y, w, h, Color, update)
 
-    fillRectangle (x, y, w, h, c)
+    fillRectangle (x, y, w, h, Color)
 
     scrollRectangle (x, y, w, h, dx, dy)
 
@@ -156,17 +156,15 @@ drawing methods
 
     copyAlphaRectangle (img, x, y, w, h, dx, dy)
 
-    drawEllipse (xc, yc, a, b, c)
+    drawEllipse (xc, yc, a, b, Color)
 
-    fillEllipse (xc, yc, a, b, c)
+    fillEllipse (xc, yc, a, b, Color)
 
-    drawPolygon (poly, c, closed)
+    drawPolygon (Polygon, Color, closed)
 
-    fillPolygon (poly, c)
+    fillPolygon (Polygon, Color)
 
-    drawText (font, text, x, y, c)
-
-    merge (w, h, cb)
+    drawText (font, text, x, y, Color)
 
     clip (x, y, w, h)
 
@@ -421,7 +419,7 @@ methods
 
     apply ()
 
-    applyToRectangle ( x, y, w, h)
+    applyToRectangle ( x, y, w, h )
 
 
 
